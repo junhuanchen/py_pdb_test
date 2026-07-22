@@ -14,6 +14,7 @@
       --line: #d6dae1;
       --accent: #0f766e;
       --warn: #b45309;
+      --special: #7c3aed;
       --code: #111827;
     }
     * { box-sizing: border-box; }
@@ -38,6 +39,7 @@
     button { cursor: pointer; }
     button.primary { background: var(--accent); border-color: var(--accent); color: white; }
     button.warn { color: var(--warn); }
+    button.special { color: var(--special); }
     input { min-width: 260px; }
     .toolbar, .evalbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
     main { display: grid; grid-template-columns: 1.25fr 0.75fr; gap: 12px; padding-bottom: 20px; }
@@ -81,12 +83,24 @@
     }
     .source-line { display: grid; grid-template-columns: 54px 1fr; gap: 10px; white-space: pre; }
     .source-line.current { background: #173b36; color: #ffffff; }
+    .source-line.special-hit { background: #3b1a67; color: #ffffff; }
     .line-no { color: #93a4bb; text-align: right; user-select: none; }
     table { width: 100%; border-collapse: collapse; }
     td, th { border-bottom: 1px solid var(--line); padding: 7px 8px; text-align: left; vertical-align: top; }
     th { color: var(--muted); font-size: 12px; font-weight: 600; }
     td code { overflow-wrap: anywhere; }
     .grid-full { grid-column: 1 / -1; }
+    .special-list { display: grid; gap: 8px; }
+    .special-row {
+      display: grid;
+      grid-template-columns: 1fr auto auto;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      padding: 8px 0;
+    }
+    .special-row.current strong { color: var(--special); }
+    .special-row small { display: block; color: var(--muted); overflow-wrap: anywhere; }
     .log { max-height: 260px; min-height: 160px; }
     @media (max-width: 820px) {
       header { align-items: flex-start; flex-direction: column; }
@@ -106,6 +120,7 @@
       <button data-cmd="step">Step</button>
       <button data-cmd="next">Next</button>
       <button data-cmd="continue">Continue</button>
+      <button data-cmd="restart" class="special">Restart</button>
       <button data-cmd="stop" class="warn">Stop</button>
     </div>
   </header>
@@ -157,6 +172,11 @@
       <pre id="evalOut"></pre>
     </section>
 
+    <section>
+      <h2>Special Breakpoints</h2>
+      <div class="content special-list" id="specialBreakpoints"></div>
+    </section>
+
     <section class="grid-full">
       <h2>JSON Debug Events</h2>
       <pre id="log" class="log"></pre>
@@ -192,7 +212,8 @@
       $("source").innerHTML = "";
       (data.source || []).forEach((line) => {
         const div = document.createElement("div");
-        div.className = `source-line${line.current ? " current" : ""}`;
+        const isSpecial = data.current_special_breakpoint && line.current;
+        div.className = `source-line${line.current ? " current" : ""}${isSpecial ? " special-hit" : ""}`;
         div.innerHTML = `<span class="line-no">${line.line}</span><span></span>`;
         div.lastElementChild.textContent = line.text;
         $("source").appendChild(div);
@@ -214,6 +235,28 @@
         tr.children[0].firstElementChild.textContent = frame.function;
         tr.children[1].textContent = frame.line;
         $("stack").appendChild(tr);
+      });
+
+      $("specialBreakpoints").innerHTML = "";
+      (data.special_breakpoints || []).forEach((bp) => {
+        const enabled = (data.enabled_special_breakpoints || []).includes(bp.name);
+        const row = document.createElement("div");
+        row.className = `special-row${data.current_special_breakpoint === bp.name ? " current" : ""}`;
+        row.innerHTML = `
+          <div>
+            <strong></strong>
+            <small></small>
+          </div>
+          <button></button>
+          <button class="special">Jump</button>
+        `;
+        row.querySelector("strong").textContent = bp.name;
+        row.querySelector("small").textContent = `${bp.function}:${bp.line} ${bp.note || ""}`;
+        const toggle = row.querySelector("button");
+        toggle.textContent = enabled ? "Disable" : "Enable";
+        toggle.addEventListener("click", () => send("special_breakpoint", { name: bp.name, enabled: !enabled }));
+        row.querySelector(".special").addEventListener("click", () => send("goto_special", { name: bp.name }));
+        $("specialBreakpoints").appendChild(row);
       });
     }
 
