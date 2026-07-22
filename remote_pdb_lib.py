@@ -142,6 +142,8 @@ class DebugControl:
 
     def wait_if_needed(self, frame, event, arg, force=False):
         with self.lock:
+            if self.stop_requested:
+                raise SystemExit("remote debugger stopped")
             self.current_frame = frame
             self.current_event = event
             self.current_arg = arg
@@ -262,6 +264,51 @@ class RemotePdb:
             return target(*args, **kwargs)
         finally:
             sys.settrace(None)
+
+
+class OutputCapture:
+    def __init__(self, control, stream_name, wrapped):
+        self.control = control
+        self.stream_name = stream_name
+        self.wrapped = wrapped
+        self.buffer = ""
+        self.lock = threading.RLock()
+
+    def write(self, text):
+        with self.lock:
+            written = self.wrapped.write(text)
+            self.wrapped.flush()
+            self.buffer += text
+            while "\n" in self.buffer:
+                line, self.buffer = self.buffer.split("\n", 1)
+                self.publish_line(line)
+            return written
+
+    def flush(self):
+        with self.lock:
+            if self.buffer:
+                self.publish_line(self.buffer)
+                self.buffer = ""
+            return self.wrapped.flush()
+
+    def publish_line(self, line):
+        self.control.publish(
+            {
+                "type": "output",
+                "stream": self.stream_name,
+                "text": line,
+                "at": time.time(),
+            }
+        )
+
+    def isatty(self):
+        return self.wrapped.isatty()
+
+    def fileno(self):
+        return self.wrapped.fileno()
+
+    def __getattr__(self, name):
+        return getattr(self.wrapped, name)
 
 
 _current_control = threading.local()
@@ -405,7 +452,15 @@ class DebugRunner:
             self.control.stop_requested = True
             self.control.resume_event.set()
         if old_thread and old_thread.is_alive():
-            old_thread.join(timeout=1.0)
+            old_thread.join(timeout=5.0)
+        if old_thread and old_thread.is_alive():
+            self.control.publish(
+                {
+                    "type": "error",
+                    "error": "restart-blocked: previous debuggee did not exit within 5 seconds",
+                }
+            )
+            return
         self.control.reset_for_restart()
         self.start()
 
@@ -413,8 +468,12 @@ class DebugRunner:
 def _run_debuggee(control, target, args, kwargs):
     debugger = RemotePdb(control)
     control.publish_status("debugger-ready")
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
     try:
         _current_control.value = control
+        sys.stdout = OutputCapture(control, "stdout", original_stdout)
+        sys.stderr = OutputCapture(control, "stderr", original_stderr)
         debugger.runcall(target, *args, **kwargs)
     except SystemExit as exc:
         control.publish({"type": "terminated", "reason": str(exc)})
@@ -424,6 +483,12 @@ def _run_debuggee(control, target, args, kwargs):
     else:
         control.publish({"type": "terminated", "reason": "target returned"})
     finally:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+        finally:
+            sys.stdout = original_stdout
+            sys.stderr = original_stderr
         _current_control.value = None
 
 
