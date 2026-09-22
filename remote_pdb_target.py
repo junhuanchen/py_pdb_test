@@ -41,6 +41,8 @@ def changing_values():
         checkpoint("before-print", "message is ready; inspect total/history/message here")
         print(message)
 
+        # image.draw_string("[remote_pdb_target] loop={iteration:03d} a={a} b={b} a+b={total} recent=[{recent}]")
+        
         if len(history) > 6:
             history.pop(0)
             checkpoint("history-trimmed", "history was longer than 6 and has been trimmed")

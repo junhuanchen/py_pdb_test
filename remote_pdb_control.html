@@ -105,6 +105,12 @@
     .program-output { max-height: 260px; min-height: 160px; background: #10151f; }
     .output-stdout { color: #d7f5e9; }
     .output-stderr { color: #ffd6d6; }
+    .exception-output { max-height: 260px; min-height: 100px; background: #2a1115; color: #ffd6d6; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .tabs { display: flex; gap: 2px; padding: 8px 8px 0; border-bottom: 1px solid var(--line); overflow-x: auto; }
+    .tab { border: 0; border-radius: 6px 6px 0 0; background: transparent; color: var(--muted); white-space: nowrap; }
+    .tab.active { background: var(--accent); color: #fff; }
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
     @media (max-width: 820px) {
       header { align-items: flex-start; flex-direction: column; }
       main { grid-template-columns: 1fr; }
@@ -156,38 +162,48 @@
     </section>
 
     <section>
-      <h2>Stack</h2>
-      <div class="content">
-        <table>
-          <thead><tr><th>Function</th><th>Line</th></tr></thead>
-          <tbody id="stack"></tbody>
-        </table>
-      </div>
-    </section>
-
-    <section>
-      <h2>Eval In Current Frame</h2>
-      <div class="content evalbar">
-        <input id="expr" value="a + b" aria-label="Expression">
-        <button id="evalBtn">Eval</button>
-        <button id="bpBtn">Toggle Breakpoint At Current Line</button>
-      </div>
-      <pre id="evalOut"></pre>
-    </section>
-
-    <section>
-      <h2>Special Breakpoints</h2>
-      <div class="content special-list" id="specialBreakpoints"></div>
-    </section>
-
-    <section class="grid-full">
       <h2>Program Output</h2>
       <pre id="programOutput" class="program-output"></pre>
     </section>
 
+    <section>
+      <h2>Exception</h2>
+      <pre id="exceptionOutput" class="exception-output">No exception reported.</pre>
+    </section>
+
     <section class="grid-full">
-      <h2>JSON Debug Events</h2>
-      <pre id="log" class="log"></pre>
+      <div class="tabs" role="tablist" aria-label="Debugger panels">
+        <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="eval">Eval In Current Frame</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-tab="stack">Stack</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-tab="special">Special Breakpoints</button>
+        <button class="tab" type="button" role="tab" aria-selected="false" data-tab="events">JSON Debug Events</button>
+      </div>
+
+      <div class="tab-panel active" data-panel="eval" role="tabpanel">
+        <div class="content evalbar">
+          <input id="expr" value="a + b" aria-label="Expression">
+          <button id="evalBtn">Eval</button>
+          <button id="bpBtn">Toggle Breakpoint At Current Line</button>
+        </div>
+        <pre id="evalOut"></pre>
+      </div>
+
+      <div class="tab-panel" data-panel="stack" role="tabpanel">
+        <div class="content">
+          <table>
+            <thead><tr><th>Function</th><th>Line</th></tr></thead>
+            <tbody id="stack"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-panel" data-panel="special" role="tabpanel">
+        <div class="content special-list" id="specialBreakpoints"></div>
+      </div>
+
+      <div class="tab-panel" data-panel="events" role="tabpanel">
+        <pre id="log" class="log"></pre>
+      </div>
     </section>
   </main>
 
@@ -198,7 +214,8 @@
 
     function log(message) {
       const line = typeof message === "string" ? message : JSON.stringify(message, null, 2);
-      $("log").textContent = `${new Date().toLocaleTimeString()} ${line}\n\n${$("log").textContent}`.slice(0, 14000);
+      $("log").textContent = `${$("log").textContent}${new Date().toLocaleTimeString()} ${line}\n\n`.slice(-14000);
+      $("log").scrollTop = $("log").scrollHeight;
     }
 
     function renderOutput(data) {
@@ -206,6 +223,13 @@
       const line = `[${new Date((data.at || Date.now() / 1000) * 1000).toLocaleTimeString()} ${prefix}] ${data.text}`;
       $("programOutput").textContent = `${$("programOutput").textContent}${line}\n`.slice(-18000);
       $("programOutput").scrollTop = $("programOutput").scrollHeight;
+    }
+
+    function renderException(data) {
+      const timestamp = new Date().toLocaleTimeString();
+      $("exceptionOutput").textContent = `[${timestamp}] ${data.traceback || data.error || "Unknown exception"}`;
+      $("exceptionOutput").scrollTop = $("exceptionOutput").scrollHeight;
+      $("state").textContent = "exception (exception)";
     }
 
     function send(command, payload = {}) {
@@ -299,6 +323,7 @@
         if (data.type === "status") renderStatus(data);
         if (data.type === "eval") $("evalOut").textContent = JSON.stringify(data, null, 2);
         if (data.type === "output") renderOutput(data);
+        if (data.type === "exception") renderException(data);
       });
     });
 
@@ -310,6 +335,24 @@
       if (!lastStatus || !lastStatus.line) return;
       const enabled = !(lastStatus.breakpoints || []).includes(lastStatus.line);
       send("breakpoint", { line: lastStatus.line, enabled });
+    });
+    document.querySelectorAll("[data-tab]").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        const name = tab.dataset.tab;
+        document.querySelectorAll("[data-tab]").forEach((item) => {
+          const active = item === tab;
+          item.classList.toggle("active", active);
+          item.setAttribute("aria-selected", String(active));
+        });
+        document.querySelectorAll("[data-panel]").forEach((panel) => {
+          panel.classList.toggle("active", panel.dataset.panel === name);
+        });
+        if (name === "events") {
+          requestAnimationFrame(() => {
+            $("log").scrollTop = $("log").scrollHeight;
+          });
+        }
+      });
     });
   </script>
 </body>

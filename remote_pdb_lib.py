@@ -30,6 +30,7 @@ import struct
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 
@@ -51,6 +52,7 @@ class DebugControl:
         self.pause_requested = True
         self.breakpoints = set()
         self.current_frame = None
+        self.next_frame = None
         self.current_event = "startup"
         self.current_arg = None
         self.last_command = {"command": "startup", "at": time.time()}
@@ -66,6 +68,7 @@ class DebugControl:
             self.mode = "pause"
             self.pause_requested = True
             self.current_frame = None
+            self.next_frame = None
             self.current_event = "restart"
             self.current_arg = None
             self.current_special_breakpoint = None
@@ -79,13 +82,21 @@ class DebugControl:
             if command == "pause":
                 self.pause_requested = True
                 self.mode = "pause"
+                self.next_frame = None
             elif command == "continue":
                 self.pause_requested = False
                 self.mode = "continue"
+                self.next_frame = None
                 self.resume_event.set()
-            elif command in {"step", "next"}:
+            elif command == "step":
                 self.pause_requested = False
-                self.mode = command
+                self.mode = "step"
+                self.next_frame = None
+                self.resume_event.set()
+            elif command == "next":
+                self.pause_requested = False
+                self.mode = "next"
+                self.next_frame = self.current_frame
                 self.resume_event.set()
             elif command == "restart":
                 self.stop_requested = True
@@ -115,6 +126,7 @@ class DebugControl:
                 self.enabled_special_breakpoints.add(name)
                 self.pause_requested = False
                 self.mode = "continue"
+                self.next_frame = None
                 self.resume_event.set()
         self.publish_status("command")
         if command == "restart" and self.restart_callback:
@@ -149,16 +161,23 @@ class DebugControl:
             self.current_arg = arg
             self.current_special_breakpoint = None
             line = frame.f_lineno
+            next_should_stop = (
+                self.mode == "next"
+                and (self.next_frame is None or frame is self.next_frame)
+                and event in {"line", "return", "exception"}
+            )
             should_stop = (
                 force
                 or self.pause_requested
-                or self.mode in {"step", "next"}
+                or self.mode == "step"
+                or next_should_stop
                 or line in self.breakpoints
             )
             if not should_stop:
                 return
             self.mode = "pause"
             self.pause_requested = True
+            self.next_frame = None
             self.resume_event.clear()
             self.publish(self.snapshot("paused"))
 
@@ -223,7 +242,7 @@ class DebugControl:
             "type": "status",
             "target": self.target_name,
             "reason": reason,
-            "state": "paused" if self.pause_requested else "running",
+            "state": "exception" if self.mode == "exception" else ("paused" if self.pause_requested else "running"),
             "event": self.current_event,
             "arg": safe_repr(self.current_arg),
             "file": frame.f_code.co_filename,
@@ -421,10 +440,18 @@ def run_debugged(target, *args, host="127.0.0.1", port=8765, target_name=None, *
     """Run a Python callable under remote PDB control."""
     runner = DebugRunner(target, args, kwargs, target_name or getattr(target, "__name__", "python-target"))
     runner.start()
+    interrupted = False
     try:
         asyncio.run(_serve(runner.control, host, port))
     except KeyboardInterrupt:
-        print("\n[remote-pdb] stopped")
+        interrupted = True
+    finally:
+        stopped = runner.stop()
+        if interrupted:
+            if stopped:
+                print("\n[remote-pdb] stopped")
+            else:
+                print("\n[remote-pdb] stopped websocket server; debuggee did not exit within 5 seconds")
 
 
 class DebugRunner:
@@ -464,6 +491,15 @@ class DebugRunner:
         self.control.reset_for_restart()
         self.start()
 
+    def stop(self, timeout=5.0):
+        with self.lock:
+            thread = self.thread
+            self.control.stop_requested = True
+            self.control.resume_event.set()
+        if thread and thread.is_alive():
+            thread.join(timeout=timeout)
+        return not thread or not thread.is_alive()
+
 
 def _run_debuggee(control, target, args, kwargs):
     debugger = RemotePdb(control)
@@ -478,7 +514,23 @@ def _run_debuggee(control, target, args, kwargs):
     except SystemExit as exc:
         control.publish({"type": "terminated", "reason": str(exc)})
     except BaseException as exc:
-        control.publish({"type": "exception", "error": repr(exc)})
+        formatted_traceback = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        event_time = time.time()
+        with control.lock:
+            control.mode = "exception"
+            control.current_event = "exception"
+            control.current_arg = exc
+            control.publish(control.snapshot("exception"))
+        for line in formatted_traceback.rstrip("\n").splitlines():
+            control.publish({"type": "output", "stream": "stderr", "text": line, "at": event_time})
+        control.publish(
+            {
+                "type": "exception",
+                "error": repr(exc),
+                "traceback": formatted_traceback,
+                "at": event_time,
+            }
+        )
         raise
     else:
         control.publish({"type": "terminated", "reason": "target returned"})
