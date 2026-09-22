@@ -41,7 +41,7 @@ def changing_values():
         checkpoint("before-print", "message is ready; inspect total/history/message here")
         print(message)
 
-        # image.draw_string("[remote_pdb_target] loop={iteration:03d} a={a} b={b} a+b={total} recent=[{recent}]")
+        image.draw_string("[remote_pdb_target] loop={iteration:03d} a={a} b={b} a+b={total} recent=[{recent}]")
         
         if len(history) > 6:
             history.pop(0)
@@ -51,3 +51,4 @@ def changing_values():
 
 if __name__ == "__main__":
     boot(changing_values, host="127.0.0.1", port=8765, target_name="changing_values_demo")
+ 

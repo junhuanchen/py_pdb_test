@@ -442,7 +442,11 @@ def run_debugged(target, *args, host="127.0.0.1", port=8765, target_name=None, *
     runner.start()
     interrupted = False
     try:
-        asyncio.run(_serve(runner.control, host, port))
+        if sys.platform == "win32":
+            with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as event_loop_runner:
+                event_loop_runner.run(_serve(runner.control, host, port))
+        else:
+            asyncio.run(_serve(runner.control, host, port))
     except KeyboardInterrupt:
         interrupted = True
     finally:
@@ -668,7 +672,10 @@ async def websocket_client(reader, writer, control):
 
 async def pump_outbox(writer, subscriber):
     while True:
-        payload = await asyncio.to_thread(subscriber.get)
+        try:
+            payload = await asyncio.to_thread(subscriber.get, True, 0.25)
+        except queue.Empty:
+            continue
         await send_ws(writer, payload)
 
 
